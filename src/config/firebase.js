@@ -1,0 +1,107 @@
+/**
+ * Firebase Admin SDK Configuration
+ * Handles Firebase Auth, Firestore, and FCM
+ */
+
+const admin = require('firebase-admin');
+const path = require('path');
+const fs = require('fs');
+
+let firebaseApp = null;
+
+/**
+ * Initialize Firebase Admin SDK
+ * Supports both service account file and environment variables
+ */
+const initializeFirebase = () => {
+  if (firebaseApp) {
+    return firebaseApp;
+  }
+
+  try {
+    let credential;
+
+    // Option 1: Use service account JSON file
+    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+    
+    if (serviceAccountPath) {
+      const absolutePath = path.resolve(serviceAccountPath);
+      
+      if (fs.existsSync(absolutePath)) {
+        const serviceAccount = require(absolutePath);
+        credential = admin.credential.cert(serviceAccount);
+        console.log('Using Firebase service account file');
+      }
+    }
+
+    firebaseApp = admin.initializeApp({
+      credential,
+      projectId: process.env.FIREBASE_PROJECT_ID || 'job-assigning-app',
+    });
+
+    console.log('Firebase Admin SDK initialized successfully');
+    return firebaseApp;
+
+  } catch (error) {
+    console.error('Firebase initialization error:', error.message);
+    console.warn('Firebase features will be limited. Please configure Firebase credentials.');
+    return null;
+  }
+};
+
+/**
+ * Get Firebase Auth instance
+ * @returns {admin.auth.Auth}
+ */
+const getAuth = () => {
+  if (!firebaseApp) {
+    initializeFirebase();
+  }
+  return admin.auth();
+};
+
+/**
+ * Get Firestore instance
+ * @returns {admin.firestore.Firestore}
+ */
+const getFirestore = () => {
+  if (!firebaseApp) {
+    initializeFirebase();
+  }
+  return admin.firestore();
+};
+
+/**
+ * Get Firebase Cloud Messaging instance
+ * @returns {admin.messaging.Messaging}
+ */
+const getMessaging = () => {
+  if (!firebaseApp) {
+    initializeFirebase();
+  }
+  return admin.messaging();
+};
+
+/**
+ * Verify Firebase ID token
+ * @param {string} idToken - Firebase ID token
+ * @returns {Promise<admin.auth.DecodedIdToken>}
+ */
+const verifyIdToken = async (idToken) => {
+  try {
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+    return decodedToken;
+  } catch (error) {
+    console.error('Token verification failed:', error.message);
+    throw error;
+  }
+};
+
+
+module.exports = {
+  initializeFirebase,
+  getAuth,
+  getFirestore,
+  getMessaging,
+  verifyIdToken,
+};
