@@ -12,6 +12,7 @@ const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 
 const { connectDB } = require('./config/database');
+const { initializeFirebase } = require('./config/firebase');
 
 // Routes
 const authRoutes = require('./routes/auth.routes');
@@ -27,6 +28,7 @@ const app = express();
 
 // Security
 app.use(helmet());
+app.set('trust proxy', 1);
 
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
@@ -110,6 +112,8 @@ const startServer = async () => {
   try {
     await connectDB();
     console.log('✅ MongoDB connected successfully');
+
+    initializeFirebase();
 
     app.listen(PORT, () => {
       console.log(`\n🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`);
