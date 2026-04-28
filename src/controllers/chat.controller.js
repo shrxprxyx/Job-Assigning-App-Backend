@@ -6,7 +6,7 @@
 const AcceptedJob = require('../models/AcceptedJob');
 const User = require('../models/User');
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
-const { getFirestore, sendPushNotification } = require('../config/firebase');
+const { getFirestore} = require('../config/firebase');
 
 /**
  * @desc    Get chat room details
