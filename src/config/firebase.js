@@ -21,12 +21,15 @@ const initializeFirebase = () => {
   try {
     let credential;
 
-    // Option 1: Use service account JSON file
-    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-    
-    if (serviceAccountPath) {
-      const absolutePath = path.resolve(serviceAccountPath);
-      
+    // Option 1: Use JSON from environment variable (for production/Render)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      credential = admin.credential.cert(serviceAccount);
+      console.log('Using Firebase service account from env variable');
+    }
+    // Option 2: Use service account file (for local development)
+    else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+      const absolutePath = path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
       if (fs.existsSync(absolutePath)) {
         const serviceAccount = require(absolutePath);
         credential = admin.credential.cert(serviceAccount);
@@ -44,7 +47,7 @@ const initializeFirebase = () => {
 
   } catch (error) {
     console.error('Firebase initialization error:', error.message);
-    console.warn('Firebase features will be limited. Please configure Firebase credentials.');
+    console.warn('Firebase features will be limited.');
     return null;
   }
 };
