@@ -23,9 +23,11 @@ const initializeFirebase = () => {
 
         // Option 1: Use JSON from environment variable (for production/Render)
         if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+            console.log('Firebase JSON env found, length:', process.env.FIREBASE_SERVICE_ACCOUNT_JSON.length);
             const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
             serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
             credential = admin.credential.cert(serviceAccount);
+            console.log('Using Firebase service account from env variable');
         }
         // Option 2: Use service account file (for local development)
         else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
@@ -35,6 +37,9 @@ const initializeFirebase = () => {
                 credential = admin.credential.cert(serviceAccount);
                 console.log('Using Firebase service account file');
             }
+        }
+        else {
+            console.log('❌ FIREBASE_SERVICE_ACCOUNT_JSON not found in env');
         }
 
         firebaseApp = admin.initializeApp({
