@@ -5,7 +5,6 @@
 const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema({
-  // Phone number — primary identity
   phone: {
     type: String,
     required: true,
@@ -76,16 +75,8 @@ const UserSchema = new mongoose.Schema({
   },
 
   rating: {
-    average: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 5,
-    },
-    count: {
-      type: Number,
-      default: 0,
-    },
+    average: { type: Number, default: 0, min: 0, max: 5 },
+    count:   { type: Number, default: 0 },
   },
 
   isProfileComplete: {
@@ -99,18 +90,9 @@ const UserSchema = new mongoose.Schema({
     default: 'active',
   },
 
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-  },
-  lastActiveAt: {
-    type: Date,
-    default: Date.now,
-  },
+  createdAt:    { type: Date, default: Date.now },
+  updatedAt:    { type: Date, default: Date.now },
+  lastActiveAt: { type: Date, default: Date.now },
 });
 
 UserSchema.index({ location: '2dsphere' });
@@ -119,12 +101,15 @@ UserSchema.index({ skills: 1, 'availability.isAvailable': 1 });
 UserSchema.pre('save', function (next) {
   this.updatedAt = new Date();
 
-  this.isProfileComplete = !!(
-    this.name &&
-    this.gender &&
-    this.skills &&
-    this.skills.length > 0
-  );
+  const hasBasicInfo = !!(this.name && this.gender);
+
+  if (this.currentMode === 'employer') {
+    // Employers are complete once they have name + gender (no skills required)
+    this.isProfileComplete = hasBasicInfo;
+  } else {
+    // Workers need name, gender, AND at least one skill
+    this.isProfileComplete = !!(hasBasicInfo && this.skills && this.skills.length > 0);
+  }
 
   next();
 });

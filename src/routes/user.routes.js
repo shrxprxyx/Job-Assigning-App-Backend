@@ -38,6 +38,13 @@ router.post('/complete-profile', authenticate, validateCompleteProfile, userCont
 router.put('/location', authenticate, validateLocation, userController.updateLocation);
 
 /**
+ * @route   POST /api/v1/users/add-skills
+ * @desc    Add skills to user profile
+ * @access  Private
+ */
+router.post('/add-skills', authenticate, userController.addSkills);
+
+/**
  * @route   PUT /api/v1/users/switch-mode
  * @desc    Switch between employer and worker mode
  * @access  Private

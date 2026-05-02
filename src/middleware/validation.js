@@ -74,9 +74,24 @@ const validateCompleteProfile = [
     .optional()
     .isInt({ min: 13, max: 120 })
     .withMessage('Age must be between 13 and 120'),
-  body('skills')
-    .isArray({ min: 1 })
-    .withMessage('At least one skill is required'),
+  body('currentMode')
+    .optional()
+    .isIn(['employer', 'worker'])
+    .withMessage('currentMode must be employer or worker'),
+  // Skills are only required when the user is signing up as a worker
+  body('skills').custom((skills, { req }) => {
+    const mode = req.body.currentMode;
+    if (mode === 'employer') return true;          // employers skip skills
+    if (!skills || skills.length === 0) {
+      throw new Error('At least one skill is required for workers');
+    }
+    return true;
+  }),
+  body('skills.*')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 100 })
+    .withMessage('Each skill must be between 2 and 100 characters'),
   validate,
 ];
 

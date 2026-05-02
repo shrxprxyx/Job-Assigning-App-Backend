@@ -20,11 +20,20 @@ const createJob = asyncHandler(async (req, res) => {
     startTime,
     payment,
     locationText,
-    locationGeo,
+    locationGeo,       // { lat, lng } from frontend
     totalTime,
     requiredSkills,
     maxWorkers,
   } = req.body;
+
+  // Build GeoJSON location so $near queries work
+  let location = undefined;
+  if (locationGeo?.lat != null && locationGeo?.lng != null) {
+    location = {
+      type: 'Point',
+      coordinates: [parseFloat(locationGeo.lng), parseFloat(locationGeo.lat)],
+    };
+  }
 
   const job = await Job.create({
     title,
@@ -33,13 +42,13 @@ const createJob = asyncHandler(async (req, res) => {
     payment,
     locationText,
     locationGeo: locationGeo || { lat: null, lng: null },
+    location,          // GeoJSON field for geospatial queries
     totalTime,
     requiredSkills: requiredSkills || [],
     maxWorkers: maxWorkers || 1,
     createdBy: req.user._id,
   });
 
-  // Populate creator info
   await job.populate('createdBy', 'name phone rating');
 
   res.status(201).json({
@@ -58,10 +67,7 @@ const getMyJobs = asyncHandler(async (req, res) => {
   const { status, page = 1, limit = 20 } = req.query;
 
   const query = { createdBy: req.user._id };
-
-  if (status) {
-    query.status = status;
-  }
+  if (status) query.status = status;
 
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -83,63 +89,95 @@ const getMyJobs = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Get available jobs (for workers)
+ * @desc    Get available jobs (for workers) — filtered by city/location
  * @route   GET /api/v1/jobs/available
  * @access  Private
+ *
+ * Query params:
+ *   latitude, longitude  — worker's current coordinates (required for geo filter)
+ *   maxDistance          — metres, default 20000 (20 km = same city roughly)
+ *   sortBy               — 'recent' | 'nearby' | 'payment'  (default: 'nearby' when coords given, else 'recent')
+ *   skills               — comma-separated skill filter
+ *   page, limit
  */
 const getAvailableJobs = asyncHandler(async (req, res) => {
-  const { latitude, longitude, maxDistance, skills, page = 1, limit = 20 } = req.query;
-
-  let coordinates = null;
-  if (latitude && longitude) {
-    coordinates = [parseFloat(longitude), parseFloat(latitude)];
-  }
+  const {
+    latitude,
+    longitude,
+    maxDistance = 20000,   // 20 km — keeps results within same city
+    skills,
+    sortBy,
+    page = 1,
+    limit = 20,
+  } = req.query;
 
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
-  let query = {
-    status: { $in: ['Open'] }, // InProgress/Closed/Completed jobs are excluded
-    createdBy: { $ne: req.user._id }, // Don't show own jobs
+  const hasCoords = latitude != null && longitude != null;
+  const coords = hasCoords
+    ? [parseFloat(longitude), parseFloat(latitude)]
+    : null;
+
+  // ── Base filter ──────────────────────────────────────────────
+  const query = {
+    status: 'Open',
+    createdBy: { $ne: req.user._id },
   };
 
-  // Filter by skills if provided
   if (skills) {
     const skillsArray = skills.split(',').map((s) => s.trim());
     query.requiredSkills = { $in: skillsArray };
   }
 
-  let jobsQuery = Job.find(query)
-    .populate('createdBy', 'name phone rating profileImage')
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(parseInt(limit));
-
-  // Add geospatial filtering if coordinates provided
-  if (coordinates) {
-    const distance = parseInt(maxDistance) || 10000;
+  // ── Geospatial filter (same city) ────────────────────────────
+  // When the worker shares their location we restrict results to
+  // jobs within maxDistance metres. This naturally limits to the
+  // same city without needing to parse city names.
+  if (coords) {
     query.location = {
       $near: {
-        $geometry: {
-          type: 'Point',
-          coordinates: coordinates,
-        },
-        $maxDistance: distance,
+        $geometry: { type: 'Point', coordinates: coords },
+        $maxDistance: parseInt(maxDistance),
       },
     };
-    jobsQuery = Job.find(query)
-      .populate('createdBy', 'name phone rating profileImage')
-      .limit(parseInt(limit));
   }
 
-  const jobs = await jobsQuery;
+  // ── Sorting ───────────────────────────────────────────────────
+  // $near already returns results sorted nearest-first, so when
+  // sortBy is 'nearby' (or defaulted) we skip the extra .sort().
+  // For 'payment' we do an in-memory sort after fetch because
+  // payment is a freetext field (e.g. "₹500/hr") — could be
+  // converted to numeric if schema changes.
+  const effectiveSort = sortBy || (coords ? 'nearby' : 'recent');
 
-  // Check if current user has applied to each job
+  let jobsQuery = Job.find(query)
+    .populate('createdBy', 'name phone rating profileImage');
+
+  if (effectiveSort === 'recent') {
+    jobsQuery = jobsQuery.sort({ createdAt: -1 });
+  }
+  // 'nearby' — $near already sorted; don't add another .sort()
+  // 'payment' — handled below after fetch
+
+  jobsQuery = jobsQuery.skip(skip).limit(parseInt(limit));
+
+  let jobs = await jobsQuery;
+
+  // Payment sort: parse leading digits from the payment string
+  if (effectiveSort === 'payment') {
+    jobs = jobs.sort((a, b) => {
+      const parse = (str) => parseInt((str || '0').replace(/\D/g, '')) || 0;
+      return parse(b.payment) - parse(a.payment);   // highest pay first
+    });
+  }
+
+  // ── Apply-status enrichment ───────────────────────────────────
   const jobIds = jobs.map((j) => j._id);
   const applications = await JobApplication.find({
     jobId: { $in: jobIds },
     applicantId: req.user._id,
   });
-  
+
   const appliedJobIds = new Set(applications.map((a) => a.jobId.toString()));
 
   const jobsWithApplyStatus = jobs.map((job) => ({
@@ -158,6 +196,73 @@ const getAvailableJobs = asyncHandler(async (req, res) => {
 });
 
 /**
+ * @desc    Get job applicants with optional sorting
+ * @route   GET /api/v1/jobs/:jobId/applicants
+ * @access  Private (Owner only)
+ *
+ * Query params:
+ *   sortBy  — 'recent' | 'nearby' | 'rating'
+ *   latitude, longitude  — employer's coords (needed for 'nearby' sort)
+ */
+const getJobApplicants = asyncHandler(async (req, res) => {
+  const { jobId } = req.params;
+  const { sortBy = 'recent', latitude, longitude } = req.query;
+
+  const job = await Job.findById(jobId);
+  if (!job) throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
+
+  if (job.createdBy.toString() !== req.user._id.toString()) {
+    throw new ApiError(403, 'Not authorized to view applicants', 'NOT_AUTHORIZED');
+  }
+
+  const applications = await JobApplication.find({ jobId })
+    .populate('applicantId', 'name phone skills rating profileImage availability location')
+    .sort({ appliedAt: -1 });
+
+  let sorted = [...applications];
+
+  if (sortBy === 'nearby' && latitude && longitude) {
+    const workerLat = parseFloat(latitude);
+    const workerLng = parseFloat(longitude);
+
+    // Haversine distance in km
+    const dist = (lat1, lng1, lat2, lng2) => {
+      const R = 6371;
+      const dLat = ((lat2 - lat1) * Math.PI) / 180;
+      const dLng = ((lng2 - lng1) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos((lat1 * Math.PI) / 180) *
+          Math.cos((lat2 * Math.PI) / 180) *
+          Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    };
+
+    sorted = sorted.sort((a, b) => {
+      const aC = a.applicantId?.location?.coordinates;  // [lng, lat]
+      const bC = b.applicantId?.location?.coordinates;
+      if (!aC || !bC) return 0;
+      const dA = dist(workerLat, workerLng, aC[1], aC[0]);
+      const dB = dist(workerLat, workerLng, bC[1], bC[0]);
+      return dA - dB;
+    });
+  } else if (sortBy === 'rating') {
+    sorted = sorted.sort(
+      (a, b) =>
+        (b.applicantId?.rating?.average || 0) -
+        (a.applicantId?.rating?.average || 0)
+    );
+  }
+  // 'recent' is already the default sort from the query
+
+  res.status(200).json({
+    success: true,
+    count: sorted.length,
+    data: { applications: sorted },
+  });
+});
+
+/**
  * @desc    Get job by ID
  * @route   GET /api/v1/jobs/:jobId
  * @access  Private
@@ -168,23 +273,15 @@ const getJobById = asyncHandler(async (req, res) => {
   const job = await Job.findById(jobId)
     .populate('createdBy', 'name phone rating profileImage');
 
-  if (!job) {
-    throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
-  }
+  if (!job) throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
 
-  // Check if current user has applied
   let applicationStatus = null;
-  if (req.user) {
-    const application = await JobApplication.findOne({
-      jobId,
-      applicantId: req.user._id,
-    });
-    if (application) {
-      applicationStatus = application.status;
-    }
-  }
+  const application = await JobApplication.findOne({
+    jobId,
+    applicantId: req.user._id,
+  });
+  if (application) applicationStatus = application.status;
 
-  // Check if job is accepted
   const acceptedJob = await AcceptedJob.findOne({ jobId })
     .populate('workerId', 'name phone rating');
 
@@ -210,37 +307,32 @@ const updateJob = asyncHandler(async (req, res) => {
   const { jobId } = req.params;
 
   let job = await Job.findById(jobId);
-
-  if (!job) {
-    throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
-  }
+  if (!job) throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
 
   if (job.createdBy.toString() !== req.user._id.toString()) {
     throw new ApiError(403, 'Not authorized to update this job', 'NOT_AUTHORIZED');
   }
 
-  // Check if job can be updated
-  if (job.status === 'Closed' || job.status === 'Completed') {
+  if (['Closed', 'Completed'].includes(job.status)) {
     throw new ApiError(400, 'Cannot update closed or completed job', 'JOB_NOT_EDITABLE');
   }
 
   const allowedUpdates = [
-    'title',
-    'description',
-    'startTime',
-    'payment',
-    'locationText',
-    'locationGeo',
-    'totalTime',
-    'requiredSkills',
-    'maxWorkers',
+    'title', 'description', 'startTime', 'payment',
+    'locationText', 'locationGeo', 'totalTime', 'requiredSkills', 'maxWorkers',
   ];
 
   const updates = {};
   for (const field of allowedUpdates) {
-    if (req.body[field] !== undefined) {
-      updates[field] = req.body[field];
-    }
+    if (req.body[field] !== undefined) updates[field] = req.body[field];
+  }
+
+  // Keep GeoJSON location in sync when locationGeo is updated
+  if (updates.locationGeo?.lat != null && updates.locationGeo?.lng != null) {
+    updates.location = {
+      type: 'Point',
+      coordinates: [parseFloat(updates.locationGeo.lng), parseFloat(updates.locationGeo.lat)],
+    };
   }
 
   job = await Job.findByIdAndUpdate(
@@ -265,12 +357,8 @@ const cancelJob = asyncHandler(async (req, res) => {
   const { jobId } = req.params;
 
   let job = await Job.findById(jobId);
+  if (!job) throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
 
-  if (!job) {
-    throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
-  }
-
-  // Check ownership
   if (job.createdBy.toString() !== req.user._id.toString()) {
     throw new ApiError(403, 'Not authorized to cancel this job', 'NOT_AUTHORIZED');
   }
@@ -283,21 +371,19 @@ const cancelJob = asyncHandler(async (req, res) => {
   job.closedAt = new Date();
   await job.save();
 
-  // Reject all pending applications
   await JobApplication.updateMany(
     { jobId, status: 'Applied' },
     { $set: { status: 'Rejected' } }
   );
 
-  // Cancel accepted job if exists
   await AcceptedJob.updateMany(
     { jobId, status: 'Active' },
-    { 
-      $set: { 
+    {
+      $set: {
         status: 'Cancelled',
         cancelledBy: req.user._id,
         cancellationReason: 'Job cancelled by employer',
-      } 
+      },
     }
   );
 
@@ -317,10 +403,7 @@ const closeJob = asyncHandler(async (req, res) => {
   const { jobId } = req.params;
 
   let job = await Job.findById(jobId);
-
-  if (!job) {
-    throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
-  }
+  if (!job) throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
 
   if (job.createdBy.toString() !== req.user._id.toString()) {
     throw new ApiError(403, 'Not authorized to close this job', 'NOT_AUTHORIZED');
@@ -330,7 +413,6 @@ const closeJob = asyncHandler(async (req, res) => {
   job.closedAt = new Date();
   await job.save();
 
-  // Reject all pending applications
   await JobApplication.updateMany(
     { jobId, status: 'Applied' },
     { $set: { status: 'Rejected' } }
@@ -340,35 +422,6 @@ const closeJob = asyncHandler(async (req, res) => {
     success: true,
     message: 'Job closed successfully',
     data: { job },
-  });
-});
-
-/**
- * @desc    Get job applicants
- * @route   GET /api/v1/jobs/:jobId/applicants
- * @access  Private (Owner only)
- */
-const getJobApplicants = asyncHandler(async (req, res) => {
-  const { jobId } = req.params;
-
-  const job = await Job.findById(jobId);
-
-  if (!job) {
-    throw new ApiError(404, 'Job not found', 'JOB_NOT_FOUND');
-  }
-
-  if (job.createdBy.toString() !== req.user._id.toString()) {
-    throw new ApiError(403, 'Not authorized to view applicants', 'NOT_AUTHORIZED');
-  }
-
-  const applications = await JobApplication.find({ jobId })
-    .populate('applicantId', 'name phone skills rating profileImage availability')
-    .sort({ appliedAt: -1 });
-
-  res.status(200).json({
-    success: true,
-    count: applications.length,
-    data: { applications },
   });
 });
 

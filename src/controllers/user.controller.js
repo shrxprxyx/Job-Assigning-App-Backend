@@ -30,13 +30,7 @@ const getProfile = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const updateProfile = asyncHandler(async (req, res) => {
-  const allowedFields = [
-    'name',
-    'age',
-    'skills',
-    'profileImage',
-    'availability',
-  ];
+  const allowedFields = ['name', 'age', 'skills', 'profileImage', 'availability'];
 
   const updates = {};
   for (const field of allowedFields) {
@@ -45,14 +39,11 @@ const updateProfile = asyncHandler(async (req, res) => {
     }
   }
 
-  // Handle nested availability object
-  if (req.body.availability) {
-    if (typeof req.body.availability === 'object') {
-      updates.availability = {
-        ...req.user.availability,
-        ...req.body.availability,
-      };
-    }
+  if (req.body.availability && typeof req.body.availability === 'object') {
+    updates.availability = {
+      ...req.user.availability,
+      ...req.body.availability,
+    };
   }
 
   const user = await User.findByIdAndUpdate(
@@ -68,34 +59,49 @@ const updateProfile = asyncHandler(async (req, res) => {
   });
 });
 
-
 /**
  * @desc    Complete user profile after signup
  * @route   POST /api/v1/users/complete-profile
  * @access  Private
+ *
+ * Body:
+ *   name     {string}   required
+ *   age      {number}   optional
+ *   gender   {string}   required
+ *   currentMode {string} 'employer' | 'worker'  — defaults to 'worker'
+ *   skills   {string[]} required for workers, optional for employers
  */
 const completeProfile = asyncHandler(async (req, res) => {
-  const { name, age, gender, skills } = req.body;
+  const { name, age, gender, skills, currentMode } = req.body;
 
-  if (!name || !gender || !skills || skills.length === 0) {
+  const mode = currentMode === 'employer' ? 'employer' : 'worker';
+
+  // Name and gender are always required
+  if (!name || !gender) {
+    throw new ApiError(400, 'Name and gender are required', 'INCOMPLETE_DATA');
+  }
+
+  // Workers must provide at least one skill
+  if (mode === 'worker' && (!skills || skills.length === 0)) {
     throw new ApiError(
       400,
-      'Name, gender, and at least one skill are required',
-      'INCOMPLETE_DATA'
+      'At least one skill is required for workers',
+      'SKILLS_REQUIRED'
     );
   }
 
+  const updateData = {
+    name,
+    age: age || null,
+    gender,
+    currentMode: mode,
+    // For employers, keep existing skills (or empty); for workers, save provided skills
+    ...(skills && skills.length > 0 ? { skills } : {}),
+  };
+
   const user = await User.findByIdAndUpdate(
     req.user._id,
-    {
-      $set: {
-        name,
-        age: age || null,
-        gender,
-        skills,
-        isProfileComplete: true,
-      },
-    },
+    { $set: updateData },
     { new: true, runValidators: true }
   ).select('-fcmToken');
 
@@ -106,6 +112,30 @@ const completeProfile = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * @desc    Add skills (used when an employer switches to worker for the first time)
+ * @route   POST /api/v1/users/add-skills
+ * @access  Private
+ */
+const addSkills = asyncHandler(async (req, res) => {
+  const { skills } = req.body;
+
+  if (!skills || skills.length === 0) {
+    throw new ApiError(400, 'At least one skill is required', 'SKILLS_REQUIRED');
+  }
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: { skills } },
+    { new: true, runValidators: true }
+  ).select('-fcmToken');
+
+  res.status(200).json({
+    success: true,
+    message: 'Skills added successfully',
+    data: { user },
+  });
+});
 
 /**
  * @desc    Update user location
@@ -202,11 +232,11 @@ const getUserById = asyncHandler(async (req, res) => {
   });
 });
 
-
 module.exports = {
   getProfile,
   updateProfile,
   completeProfile,
+  addSkills,
   updateLocation,
   switchMode,
   toggleAvailability,
