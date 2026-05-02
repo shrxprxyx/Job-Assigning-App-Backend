@@ -98,7 +98,7 @@ const getAvailableJobs = asyncHandler(async (req, res) => {
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   let query = {
-    status: 'Open',
+    status: { $in: ['Open'] }, // InProgress/Closed/Completed jobs are excluded
     createdBy: { $ne: req.user._id }, // Don't show own jobs
   };
 

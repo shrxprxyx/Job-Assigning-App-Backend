@@ -27,6 +27,12 @@ const applyForJob = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'This job is no longer accepting applications', 'JOB_CLOSED');
   }
 
+  // Extra guard: block if job already has an accepted worker
+  const alreadyAccepted = await AcceptedJob.findOne({ jobId });
+  if (alreadyAccepted) {
+    throw new ApiError(400, 'This job has already been assigned to someone', 'JOB_ASSIGNED');
+  }
+
   if (job.createdBy.toString() === req.user._id.toString()) {
     throw new ApiError(400, 'Cannot apply to your own job', 'OWN_JOB');
   }

@@ -5,12 +5,8 @@
 const SkillPost = require('../models/SkillPost');
 const SkillRequest = require('../models/SkillRequest');
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
+const { v4: uuidv4 } = require('uuid');
 
-/**
- * @desc    Create a skill post
- * @route   POST /api/v1/skill-posts
- * @access  Private
- */
 const createSkillPost = asyncHandler(async (req, res) => {
   const { skill, description, photo, priceRange, category, location } = req.body;
 
@@ -33,11 +29,6 @@ const createSkillPost = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get all skill posts
- * @route   GET /api/v1/skill-posts
- * @access  Private
- */
 const getSkillPosts = asyncHandler(async (req, res) => {
   const { category, search, page = 1, limit = 20 } = req.query;
 
@@ -72,11 +63,6 @@ const getSkillPosts = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get my skill posts
- * @route   GET /api/v1/skill-posts/my-posts
- * @access  Private
- */
 const getMySkillPosts = asyncHandler(async (req, res) => {
   const skillPosts = await SkillPost.find({
     userId: req.user._id,
@@ -90,11 +76,6 @@ const getMySkillPosts = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get skill post by ID
- * @route   GET /api/v1/skill-posts/:postId
- * @access  Private
- */
 const getSkillPostById = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
@@ -113,11 +94,6 @@ const getSkillPostById = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Update skill post
- * @route   PUT /api/v1/skill-posts/:postId
- * @access  Private (Owner only)
- */
 const updateSkillPost = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
@@ -149,11 +125,6 @@ const updateSkillPost = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Delete skill post
- * @route   DELETE /api/v1/skill-posts/:postId
- * @access  Private (Owner only)
- */
 const deleteSkillPost = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
@@ -176,11 +147,6 @@ const deleteSkillPost = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Request a skill post (employer → worker)
- * @route   POST /api/v1/skill-posts/:postId/request
- * @access  Private
- */
 const requestJobFromSkillPost = asyncHandler(async (req, res) => {
   const { postId } = req.params;
   const { message } = req.body;
@@ -195,7 +161,6 @@ const requestJobFromSkillPost = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Cannot request from your own post', 'OWN_POST');
   }
 
-  // Prevent duplicate pending requests
   const existing = await SkillRequest.findOne({
     skillPostId: postId,
     fromUserId: req.user._id,
@@ -221,11 +186,6 @@ const requestJobFromSkillPost = asyncHandler(async (req, res) => {
   });
 });
 
-/**
- * @desc    Get all requests for a skill post (owner only)
- * @route   GET /api/v1/skill-posts/:postId/requests
- * @access  Private
- */
 const getSkillPostRequests = asyncHandler(async (req, res) => {
   const { postId } = req.params;
 
@@ -254,7 +214,7 @@ const getSkillPostRequests = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Accept a skill request
+ * @desc    Accept a skill request — creates a chat room between the two users
  * @route   PUT /api/v1/skill-posts/:postId/requests/:requestId/accept
  * @access  Private (Owner only)
  */
@@ -278,13 +238,34 @@ const acceptSkillRequest = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'Request not found', 'REQUEST_NOT_FOUND');
   }
 
+  // Generate a unique chat room ID for this skill request
+  const chatRoomId = uuidv4();
+
   request.status = 'accepted';
+  request.chatRoomId = chatRoomId;
   await request.save();
+
+  // Pre-create the Firestore chat room doc so both users can access it immediately
+  const { getFirestore } = require('../config/firebase');
+  const db = getFirestore();
+
+  await db.collection('chats').doc(chatRoomId).set({
+    type: 'skill',
+    skillPostId: postId,
+    skillName: skillPost.skill,
+    workerId: req.user._id.toString(),       // skill poster = worker
+    employerId: request.fromUserId._id.toString(), // requester = employer
+    workerName: req.user.name,
+    employerName: request.fromUserId.name,
+    createdAt: new Date().toISOString(),
+    lastMessage: null,
+    lastMessageAt: null,
+  });
 
   res.status(200).json({
     success: true,
     message: `Accepted request from ${request.fromUserId.name}`,
-    data: { request },
+    data: { request, chatRoomId },
   });
 });
 

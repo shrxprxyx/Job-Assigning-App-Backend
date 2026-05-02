@@ -33,6 +33,10 @@ const SkillRequestSchema = new mongoose.Schema({
     default: Date.now,
     index: true,
   },
+  chatRoomId: {
+  type: String,
+  default: null,
+ },
 });
 
 SkillRequestSchema.set('toJSON', {
